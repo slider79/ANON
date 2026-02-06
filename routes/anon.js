@@ -111,6 +111,22 @@ router.post('/consensus/tick', (_req, res) => {
   }
 });
 
+// Get user public details (reputation, etc.)
+router.get('/users/:id', (req, res) => {
+  const { id } = req.params;
+  const user = userStore.loadUser(id);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  // Remove internal fields if necessary, or just return safe ones
+  res.json({
+    id: user.id,
+    publicKey: user.publicKey,
+    reputation: user.reputation,
+    mana: user.mana,
+  });
+});
+
 // Mana status
 router.get('/users/:id/mana', (req, res) => {
   const { id } = req.params;

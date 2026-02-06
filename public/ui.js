@@ -182,9 +182,9 @@ function renderFeed() {
         <div class="row">
           <div class="score-bar">
             <div class="score-bar-fill" style="width:${Math.max(
-              0,
-              Math.min(1, (score + 1) / 2)
-            ) * 100}%;"></div>
+      0,
+      Math.min(1, (score + 1) / 2)
+    ) * 100}%;"></div>
           </div>
           <span style="font-size:11px;">${score.toFixed(2)}</span>
           <button class="secondary" data-action="vote" data-id="${id}" data-v="1">⬆</button>
@@ -234,6 +234,19 @@ async function refreshNetworkStatus() {
       onlineIndicator.style.color = '#f97373';
       onlineLabel.textContent = 'Offline';
     }
+  }
+}
+
+
+async function refreshUser() {
+  if (!state.user) return;
+  try {
+    const user = await api(`/users/${state.user.id}`);
+    state.user = { ...state.user, ...user };
+    saveUserToStorage(state.user);
+    renderIdentitySection();
+  } catch (e) {
+    // ignore
   }
 }
 
@@ -304,6 +317,7 @@ function attachHandlers() {
     refreshFeed();
     refreshNetworkStatus();
     refreshMana();
+    refreshUser();
   };
   const textArea = $('rumor-text');
   if (textArea) textArea.addEventListener('input', updateRumorHint);
@@ -334,6 +348,7 @@ async function init() {
   await refreshNetworkStatus();
   if (state.user) {
     await refreshMana();
+    await refreshUser();
   }
   await refreshFeed();
 
@@ -342,6 +357,7 @@ async function init() {
     refreshNetworkStatus();
     refreshMana();
     refreshFeed();
+    refreshUser();
   }, 15000);
 }
 

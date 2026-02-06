@@ -147,6 +147,7 @@ module.exports = {
   getMana,
   getAllUsers,
   setReputations,
+  loadUser,
   INITIAL_REPUTATION,
 };
 
