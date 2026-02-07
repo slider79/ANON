@@ -13,6 +13,11 @@ function sha256(value) {
 }
 
 function issueTokenForEmail(email) {
+  // 1. Check for .edu extension
+  if (!email.toLowerCase().endsWith('.edu')) {
+    throw new Error('Registration is restricted to .edu emails only.');
+  }
+
   const emailHash = sha256(email.toLowerCase());
 
   const exists = db
@@ -71,6 +76,32 @@ function onboardNode(publicKey, token) {
       'SELECT id, public_key AS publicKey, reputation, mana, last_mana_update AS lastManaUpdate FROM users WHERE id = ?'
     )
     .get(id);
+}
+
+// Needed for P2P Login to work
+function importUser(user) {
+  const stmt = db.prepare(`
+    INSERT INTO users (id, public_key, reputation, mana, last_mana_update)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      reputation = excluded.reputation,
+      mana = excluded.mana,
+      last_mana_update = excluded.last_mana_update
+  `);
+  
+  stmt.run(
+    user.id, 
+    user.publicKey, 
+    user.reputation, 
+    user.mana, 
+    user.lastManaUpdate || Date.now()
+  );
+  return user;
+}
+
+// New: Delete user from DB
+function deleteUser(id) {
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
 }
 
 function loadUser(userId) {
@@ -143,6 +174,8 @@ function setReputations(repMap) {
 module.exports = {
   issueTokenForEmail,
   onboardNode,
+  importUser, // Exported for P2P Sync
+  deleteUser, // Exported for Destroy Account
   consumeMana,
   getMana,
   getAllUsers,
@@ -150,5 +183,3 @@ module.exports = {
   loadUser,
   INITIAL_REPUTATION,
 };
-
-

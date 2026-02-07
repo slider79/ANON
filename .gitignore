@@ -24,3 +24,5 @@ Thumbs.db
 .anon/
 .anon-*/
 test_output*.txt
+
+.anon /

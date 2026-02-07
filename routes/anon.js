@@ -10,9 +10,42 @@ const dagStore = require('../models/dagStore');
 const userStore = require('../models/userStore');
 const dhtService = require('../services/dhtService');
 
+// --- Rate Limiter Storage ---
+// Map Key: "voterId:rumorId:type" -> Array of timestamps
+const voteLimits = new Map();
+
+// Clean up old rate limit entries every minute to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamps] of voteLimits.entries()) {
+    const valid = timestamps.filter(t => now - t < 60000);
+    if (valid.length === 0) voteLimits.delete(key);
+    else voteLimits.set(key, valid);
+  }
+}, 60000);
+
+function checkVoteRateLimit(userId, rumorId, type) {
+  const key = `${userId}:${rumorId}:${type}`;
+  const now = Date.now();
+  const window = 60000; // 1 minute
+  const limit = 3;
+
+  let timestamps = voteLimits.get(key) || [];
+  // Filter out votes older than 1 minute
+  timestamps = timestamps.filter(t => now - t < window);
+  
+  if (timestamps.length >= limit) {
+    voteLimits.set(key, timestamps); // Update cleanup
+    return false; // Blocked
+  }
+  
+  timestamps.push(now);
+  voteLimits.set(key, timestamps);
+  return true; // Allowed
+}
+
 // ---- Identity & Onboarding ----
 
-// Simulated email verification + blind token issuance
 router.post('/auth/register', (req, res) => {
   const { email } = req.body;
   if (!email || typeof email !== 'string') {
@@ -27,7 +60,6 @@ router.post('/auth/register', (req, res) => {
   }
 });
 
-// Complete onboarding with public key and token
 router.post('/auth/onboard', (req, res) => {
   const { publicKey, token } = req.body;
   if (!publicKey || !token) {
@@ -36,6 +68,11 @@ router.post('/auth/onboard', (req, res) => {
 
   try {
     const node = identityService.onboardNode(publicKey, token);
+    
+    // FIX: Broadcast this new Identity to the network
+    // This ensures Node 1 knows about this user immediately
+    p2pService.gossipUser(node);
+    
     return res.json(node);
   } catch (err) {
     return res.status(400).json({ error: err.message });
@@ -59,7 +96,6 @@ router.post('/rumors', (req, res) => {
       parentId: parentId || null,
     });
 
-    // P2P: gossip + DHT store
     p2pService.gossipDagNode(node);
 
     return res.json(node);
@@ -71,6 +107,12 @@ router.post('/rumors', (req, res) => {
 router.post('/rumors/:id/votes', (req, res) => {
   const rumorId = req.params.id;
   const { voterId, vote, evidence } = req.body;
+
+  // 1. Check Rate Limit (Review Bomb Protection)
+  const type = vote > 0 ? 'verify' : 'dispute';
+  if (!checkVoteRateLimit(voterId, rumorId, type)) {
+    return res.status(429).json({ error: `Rate limit: You can only ${type} this post 3 times per minute.` });
+  }
 
   try {
     const manaOk = manaService.consumeMana(voterId, 5);
@@ -85,7 +127,6 @@ router.post('/rumors/:id/votes', (req, res) => {
       evidence: evidence || null,
     });
 
-    // P2P: gossip + DHT store
     p2pService.gossipDagNode(voteNode);
 
     return res.json(voteNode);
@@ -101,7 +142,6 @@ router.get('/feed', (_req, res) => {
   res.json(feed);
 });
 
-// Manual consensus tick (in addition to internal interval)
 router.post('/consensus/tick', (_req, res) => {
   try {
     const result = trustService.runConsensusTick();
@@ -111,14 +151,40 @@ router.post('/consensus/tick', (_req, res) => {
   }
 });
 
-// Get user public details (reputation, etc.)
-router.get('/users/:id', (req, res) => {
+router.delete('/users/:id', (req, res) => {
   const { id } = req.params;
-  const user = userStore.loadUser(id);
+  try {
+    userStore.deleteUser(id);
+    console.log(`[Identity] User ${id} deleted from database.`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// FIX: Make this Async to handle P2P Lookup for "Restore Account"
+router.get('/users/:id', async (req, res) => {
+  const { id } = req.params;
+  
+  // 1. Try Local Database
+  let user = userStore.loadUser(id);
+  
+  // 2. If not found locally, try Network (DHT)
+  if (!user) {
+    console.log(`[Identity] User ${id} not found locally. Searching network...`);
+    const netUser = await p2pService.dhtGet(`user:${id}`);
+    
+    if (netUser && netUser.id === id) {
+      console.log(`[Identity] Found user ${id} in network. Importing.`);
+      userStore.importUser(netUser);
+      user = netUser;
+    }
+  }
+
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
-  // Remove internal fields if necessary, or just return safe ones
+
   res.json({
     id: user.id,
     publicKey: user.publicKey,
@@ -127,7 +193,6 @@ router.get('/users/:id', (req, res) => {
   });
 });
 
-// Mana status
 router.get('/users/:id/mana', (req, res) => {
   const { id } = req.params;
   const mana = manaService.getMana(id);
@@ -164,7 +229,6 @@ router.post('/dht/put', (req, res) => {
   res.json({ ok: true });
 });
 
-// Fetch a DAG node locally or via the DHT (dag:<id>)
 router.get('/dag/:id', async (req, res) => {
   const { id } = req.params;
   const local = dagStore.getNode(id);
@@ -173,7 +237,6 @@ router.get('/dag/:id', async (req, res) => {
   const value = await p2pService.dhtGet(`dag:${id}`);
   if (!value) return res.status(404).json({ error: 'Not found' });
 
-  // cache locally in DAG store
   if (!dagStore.getNode(value.id)) dagStore.addNode(value);
   res.json(value);
 });
@@ -205,5 +268,3 @@ router.get('/debug/dht', (_req, res) => {
 });
 
 module.exports = router;
-
-
